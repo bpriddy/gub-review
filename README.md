@@ -46,13 +46,17 @@ deploy.
 
 ```bash
 npm install
-npm run dev   # starts on :3002
-```
 
-Point it at a running GUB backend via `.env.local`:
+# Wire the secret-scan pre-commit hook (required — refuses commit on
+# detected API keys, tokens, JSON keys, etc.)
+brew install gitleaks        # or see https://github.com/gitleaks/gitleaks#installation
+git config core.hooksPath .githooks
 
-```
-GUB_BACKEND_URL=http://localhost:3000
+# Local config — points at a running GUB backend
+cp .env.example .env.local
+# (edit .env.local if you want to hit a non-localhost backend)
+
+npm run dev   # starts on :3003
 ```
 
 ## Deploy
