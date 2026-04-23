@@ -15,7 +15,17 @@
 
 # misc
 .DS_Store
+
+# secrets — code-level coverage for anything that should NOT hit git
+.env.*
+!.env.example
+secrets/
+keys/
 *.pem
+*.key
+*.p12
+*-sa.json
+*service-account*.json
 
 # debug
 npm-debug.log*
