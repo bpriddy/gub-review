@@ -2,8 +2,9 @@
 #
 # Mirrors the typecheck step in cloudbuild/dev.yaml (npm ci && npx tsc
 # --noEmit) and adds `next build` as the real build gate (no DB or env needed
-# at build time — see Dockerfile). `npm run lint` (next lint) is intentionally
-# NOT run: eslint is not installed or configured in this repo. See CI-CD.md.
+# at build time — see Dockerfile). ESLint (eslint-config-next) + Prettier are
+# configured but not yet enforced here; `next lint` is currently clean, add a
+# lint step whenever you want it gating.
 
 name: CI
 
