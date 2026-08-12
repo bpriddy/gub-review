@@ -1,0 +1,42 @@
+# CI — type check + production build.
+#
+# Mirrors the typecheck step in cloudbuild/dev.yaml (npm ci && npx tsc
+# --noEmit) and adds `next build` as the real build gate (no DB or env needed
+# at build time — see Dockerfile). ESLint (eslint-config-next) + Prettier are
+# configured but not yet enforced here; `next lint` is currently clean, add a
+# lint step whenever you want it gating.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build (next build)
+        run: npm run build
