@@ -6,7 +6,6 @@
 # matching cloudbuild config) when staging/prod exist.
 #
 # Auth is Workload Identity Federation (OIDC) — no service-account keys.
-# Required GitHub repository variables: see CI-CD.md.
 #
 # This workflow updates the IMAGE ONLY. Env vars (NODE_ENV, GUB_BACKEND_URL),
 # scaling and the public --allow-unauthenticated posture stay whatever the
