@@ -5,6 +5,7 @@ import type {
   ApplyDecisionsResult,
   Decision,
   FieldChangeItem,
+  InsightOpItem,
   NewEntityGroup,
   ReviewSession,
 } from './types';
@@ -30,9 +31,17 @@ interface GroupState {
   error: string | null;
 }
 
+/** insight_op cards are approve/reject only — no override affordance. */
+interface InsightRowState {
+  choice: RowChoice;
+  resolved: 'applied' | 'rejected' | null;
+  error: string | null;
+}
+
 interface FormState {
   fields: Record<string, FieldRowState>;
   groups: Record<string, GroupState>;
+  insights: Record<string, InsightRowState>;
 }
 
 type Action =
@@ -41,6 +50,7 @@ type Action =
   | { type: 'setGroupChoice'; groupId: string; choice: RowChoice }
   | { type: 'setGroupOverride'; groupId: string; property: string; value: string }
   | { type: 'clearGroupOverride'; groupId: string; property: string }
+  | { type: 'setInsightChoice'; proposalId: string; choice: RowChoice }
   | {
       type: 'markResults';
       approvedIds: Set<string>;
@@ -107,6 +117,17 @@ function reducer(state: FormState, action: Action): FormState {
         groups: { ...state.groups, [action.groupId]: { ...prev, fieldOverrides: next } },
       };
     }
+    case 'setInsightChoice': {
+      const prev = state.insights[action.proposalId];
+      if (!prev) return state;
+      return {
+        ...state,
+        insights: {
+          ...state.insights,
+          [action.proposalId]: { ...prev, choice: action.choice, error: null },
+        },
+      };
+    }
     case 'markResults': {
       const fields: Record<string, FieldRowState> = { ...state.fields };
       for (const [id, row] of Object.entries(state.fields)) {
@@ -130,7 +151,18 @@ function reducer(state: FormState, action: Action): FormState {
           groups[id] = { ...g, resolved: 'rejected', error: null };
         }
       }
-      return { fields, groups };
+      const insights: Record<string, InsightRowState> = { ...state.insights };
+      for (const [id, row] of Object.entries(state.insights)) {
+        const err = action.errors.find((e) => e.target === id);
+        if (err) {
+          insights[id] = { ...row, error: err.reason };
+        } else if (action.approvedIds.has(id)) {
+          insights[id] = { ...row, resolved: 'applied', error: null };
+        } else if (action.rejectedIds.has(id)) {
+          insights[id] = { ...row, resolved: 'rejected', error: null };
+        }
+      }
+      return { fields, groups, insights };
     }
   }
 }
@@ -154,7 +186,11 @@ function initialFormState(session: ReviewSession): FormState {
       error: null,
     };
   }
-  return { fields, groups };
+  const insights: Record<string, InsightRowState> = {};
+  for (const op of session.insightOps) {
+    insights[op.proposalId] = { choice: null, resolved: null, error: null };
+  }
+  return { fields, groups, insights };
 }
 
 // ── Presentation helpers ────────────────────────────────────────────────────
@@ -185,13 +221,7 @@ function daysUntil(iso: string): number {
 
 // ── Top-level component ─────────────────────────────────────────────────────
 
-export function ReviewClient({
-  token,
-  session,
-}: {
-  token: string;
-  session: ReviewSession;
-}) {
+export function ReviewClient({ token, session }: { token: string; session: ReviewSession }) {
   const [state, dispatch] = useReducer(reducer, session, initialFormState);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -221,9 +251,7 @@ export function ReviewClient({
       const gs = state.groups[g.proposalGroupId];
       if (!gs || gs.resolved) continue;
       if (gs.choice === 'approve') {
-        const overrides = Object.keys(gs.fieldOverrides).length
-          ? gs.fieldOverrides
-          : undefined;
+        const overrides = Object.keys(gs.fieldOverrides).length ? gs.fieldOverrides : undefined;
         decs.push({
           proposalGroupId: g.proposalGroupId,
           decision: 'approve',
@@ -232,6 +260,15 @@ export function ReviewClient({
         hasPending = true;
       } else if (gs.choice === 'reject') {
         decs.push({ proposalGroupId: g.proposalGroupId, decision: 'reject' });
+        hasPending = true;
+      }
+    }
+
+    for (const op of session.insightOps) {
+      const row = state.insights[op.proposalId];
+      if (!row || row.resolved) continue;
+      if (row.choice === 'approve' || row.choice === 'reject') {
+        decs.push({ proposalId: op.proposalId, decision: row.choice });
         hasPending = true;
       }
     }
@@ -285,8 +322,7 @@ export function ReviewClient({
       {session.newEntityGroups.length > 0 && (
         <section>
           <h2 className="text-base font-semibold text-gray-900 mb-3">
-            New{' '}
-            {session.newEntityGroups.length === 1 ? 'entity' : 'entities'}
+            New {session.newEntityGroups.length === 1 ? 'entity' : 'entities'}
           </h2>
           <div className="space-y-3">
             {session.newEntityGroups.map((g) => (
@@ -303,9 +339,7 @@ export function ReviewClient({
 
       {session.fieldChanges.length > 0 && (
         <section>
-          <h2 className="text-base font-semibold text-gray-900 mb-3">
-            Proposed changes
-          </h2>
+          <h2 className="text-base font-semibold text-gray-900 mb-3">Proposed changes</h2>
           <div className="space-y-3">
             {session.fieldChanges.map((fc) => (
               <FieldChangeRow
@@ -319,31 +353,43 @@ export function ReviewClient({
         </section>
       )}
 
+      {session.insightOps.length > 0 && (
+        <section>
+          <h2 className="text-base font-semibold text-gray-900 mb-3">Insight updates</h2>
+          <div className="space-y-3">
+            {session.insightOps.map((op) => (
+              <InsightOpCard
+                key={op.proposalId}
+                item={op}
+                state={state.insights[op.proposalId]!}
+                dispatch={dispatch}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       <footer className="sticky bottom-0 -mx-4 sm:-mx-6 lg:-mx-8 bg-white border-t border-gray-200 px-4 sm:px-6 lg:px-8 py-4">
         <div className="max-w-4xl mx-auto flex items-center justify-between gap-4">
           <div className="text-sm text-gray-600">
             {result ? (
               <>
-                <span className="text-green-700 font-medium">
-                  {result.approved} approved
-                </span>
+                <span className="text-green-700 font-medium">{result.approved} approved</span>
                 {' · '}
-                <span className="text-gray-700 font-medium">
-                  {result.rejected} rejected
-                </span>
+                <span className="text-gray-700 font-medium">{result.rejected} rejected</span>
                 {result.errors.length > 0 && (
                   <>
                     {' · '}
-                    <span className="text-red-700 font-medium">
-                      {result.errors.length} failed
-                    </span>
+                    <span className="text-red-700 font-medium">{result.errors.length} failed</span>
                   </>
                 )}
               </>
             ) : submitError ? (
               <span className="text-red-700">{submitError}</span>
             ) : pending ? (
-              <>{decisions.length} decision{decisions.length === 1 ? '' : 's'} ready</>
+              <>
+                {decisions.length} decision{decisions.length === 1 ? '' : 's'} ready
+              </>
             ) : (
               <span className="text-gray-400">Select a choice on any row to enable submit</span>
             )}
@@ -397,15 +443,11 @@ function FieldChangeRow({
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-medium text-gray-900">
-              {item.entityName}
-            </span>
+            <span className="text-sm font-medium text-gray-900">{item.entityName}</span>
             <span className="text-xs text-gray-400">
               {item.entityType === 'account' ? 'Account' : 'Campaign'}
             </span>
-            <span className="text-xs text-gray-500">
-              &middot; {propertyLabel(item.property)}
-            </span>
+            <span className="text-xs text-gray-500">&middot; {propertyLabel(item.property)}</span>
             {item.confidence !== null && (
               <span className="text-xs text-gray-400">
                 &middot; confidence {(item.confidence * 100).toFixed(0)}%
@@ -421,14 +463,10 @@ function FieldChangeRow({
               {proposedDisplay}
             </code>
           </div>
-          {item.reasoning && (
-            <p className="mt-2 text-xs text-gray-500 italic">{item.reasoning}</p>
-          )}
+          {item.reasoning && <p className="mt-2 text-xs text-gray-500 italic">{item.reasoning}</p>}
           {showOverride && !locked && (
             <div className="mt-3">
-              <label className="text-xs text-gray-600 block mb-1">
-                Override proposed value
-              </label>
+              <label className="text-xs text-gray-600 block mb-1">Override proposed value</label>
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -460,9 +498,7 @@ function FieldChangeRow({
               </div>
             </div>
           )}
-          {state.error && (
-            <p className="mt-2 text-xs text-red-700">Error: {state.error}</p>
-          )}
+          {state.error && <p className="mt-2 text-xs text-red-700">Error: {state.error}</p>}
         </div>
         <RowActions
           locked={locked}
@@ -485,6 +521,119 @@ function FieldChangeRow({
           onToggleOverride={() => setShowOverride((v) => !v)}
           overrideAvailable={state.choice === 'approve'}
           overrideActive={state.overrideValue !== null}
+        />
+      </div>
+      <div className="mt-2 text-xs text-gray-400">
+        Expires in {daysUntil(item.expiresAt)} day{daysUntil(item.expiresAt) === 1 ? '' : 's'}
+      </div>
+    </div>
+  );
+}
+
+// ── Insight-op card ─────────────────────────────────────────────────────────
+
+const OP_BADGE: Record<InsightOpItem['op'], { label: string; className: string }> = {
+  ADD: { label: 'add', className: 'bg-green-50 border-green-200 text-green-700' },
+  UPDATE: { label: 'update', className: 'bg-blue-50 border-blue-200 text-blue-700' },
+  SUPERSEDE: { label: 'supersede', className: 'bg-purple-50 border-purple-200 text-purple-700' },
+};
+
+function InsightOpCard({
+  item,
+  state,
+  dispatch,
+}: {
+  item: InsightOpItem;
+  state: InsightRowState;
+  dispatch: React.Dispatch<Action>;
+}) {
+  const locked = state.resolved !== null;
+  const badge = OP_BADGE[item.op];
+
+  return (
+    <div
+      className={`bg-white border rounded-lg p-4 ${
+        state.error
+          ? 'border-red-300'
+          : state.resolved === 'applied'
+            ? 'border-green-300'
+            : state.resolved === 'rejected'
+              ? 'border-gray-300'
+              : 'border-gray-200'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium text-gray-900">{item.entityName}</span>
+            <span className="text-xs text-gray-400">
+              {item.entityType === 'account' ? 'Account' : 'Campaign'}
+            </span>
+            <span
+              className={`text-xs px-1.5 py-0.5 rounded border uppercase tracking-wide ${badge.className}`}
+            >
+              {badge.label}
+            </span>
+            {item.confidence !== null && (
+              <span className="text-xs text-gray-400">
+                &middot; confidence {(item.confidence * 100).toFixed(0)}%
+              </span>
+            )}
+          </div>
+          <div className="mt-2 space-y-2 text-sm">
+            {item.op !== 'ADD' && (
+              <div className="flex items-start gap-2">
+                <span className="text-xs text-gray-400 w-14 shrink-0 pt-1">current</span>
+                <code className="flex-1 text-xs bg-gray-50 border border-gray-200 rounded px-2 py-1 text-gray-600 whitespace-pre-wrap break-words">
+                  {item.targetText ?? '— (insight no longer exists)'}
+                </code>
+              </div>
+            )}
+            <div className="flex items-start gap-2">
+              <span className="text-xs text-gray-400 w-14 shrink-0 pt-1">
+                {item.op === 'ADD' ? 'new' : 'proposed'}
+              </span>
+              <code className="flex-1 text-xs bg-blue-50 border border-blue-200 rounded px-2 py-1 text-blue-900 whitespace-pre-wrap break-words">
+                {item.text}
+              </code>
+            </div>
+          </div>
+          {item.reasoning && <p className="mt-2 text-xs text-gray-500 italic">{item.reasoning}</p>}
+          {item.targetStale && (
+            <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+              The underlying insight changed since this was proposed — approving will be rejected as
+              stale, and the next scan will re-propose against current data.
+            </p>
+          )}
+          {item.unresolvedEntity && (
+            <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+              This belongs to a campaign that hasn&apos;t been created yet — approve its new-entity
+              card first, or this stays pending.
+            </p>
+          )}
+          {state.error && <p className="mt-2 text-xs text-red-700">Error: {state.error}</p>}
+        </div>
+        <RowActions
+          locked={locked}
+          resolved={state.resolved}
+          choice={state.choice}
+          onApprove={() =>
+            dispatch({
+              type: 'setInsightChoice',
+              proposalId: item.proposalId,
+              choice: state.choice === 'approve' ? null : 'approve',
+            })
+          }
+          onReject={() =>
+            dispatch({
+              type: 'setInsightChoice',
+              proposalId: item.proposalId,
+              choice: state.choice === 'reject' ? null : 'reject',
+            })
+          }
+          onToggleOverride={() => {}}
+          overrideAvailable={false}
+          overrideActive={false}
         />
       </div>
       <div className="mt-2 text-xs text-gray-400">
@@ -567,8 +716,7 @@ function NewEntityGroupCard({
           {showOverrides && !locked && (
             <div className="mt-3 space-y-2">
               {group.fields.map((f) => {
-                const current =
-                  state.fieldOverrides[f.property] ?? formatValue(f.proposedValue);
+                const current = state.fieldOverrides[f.property] ?? formatValue(f.proposedValue);
                 return (
                   <div key={f.proposalId} className="flex items-center gap-2">
                     <label className="text-xs text-gray-600 w-24 shrink-0">
@@ -607,9 +755,7 @@ function NewEntityGroupCard({
               })}
             </div>
           )}
-          {state.error && (
-            <p className="mt-2 text-xs text-red-700">Error: {state.error}</p>
-          )}
+          {state.error && <p className="mt-2 text-xs text-red-700">Error: {state.error}</p>}
         </div>
         <RowActions
           locked={locked}
@@ -675,9 +821,7 @@ function RowActions({
   }
   if (resolved === 'rejected') {
     return (
-      <span className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-600 shrink-0">
-        rejected
-      </span>
+      <span className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-600 shrink-0">rejected</span>
     );
   }
 
