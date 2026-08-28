@@ -1,27 +1,26 @@
-# Deploy — build the image with the repo Dockerfile, push to Artifact
-# Registry, roll the Cloud Run service.
+# Deploy — typecheck gate, build the image with the repo Dockerfile, push to
+# Artifact Registry, roll the Cloud Run service.
 #
 # gub-review currently has a single environment (dev) — cloudbuild/ only
-# ships dev.yaml — so there is no environment input yet. Add one (and the
-# matching cloudbuild config) when staging/prod exist.
+# ships dev.yaml — so there is no environment input yet. Add one (and new
+# FLAGS case arms) when staging/prod exist.
 #
 # Auth is Workload Identity Federation (OIDC) — no service-account keys.
+# Required GitHub repository variables: GCP_REGION, GCP_PROJECT_ID,
+# GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT_EMAIL.
+# (No GH_PACKAGES_TOKEN — this repo has no private npm dependencies.)
 #
-# This workflow updates the IMAGE ONLY. Env vars (NODE_ENV, GUB_BACKEND_URL),
-# scaling and the public --allow-unauthenticated posture stay whatever the
-# last cloudbuild/dev.yaml deploy set — that file remains the config source
-# of truth, and first-time provisioning still goes through it.
-#
-# Manual trigger only for now: the existing Cloud Build trigger fires on push
-# to main; enabling a push trigger here too would double-deploy. Once the
-# Cloud Build trigger is disabled, uncomment `push:`.
+# THIS WORKFLOW IS THE SINGLE SOURCE OF TRUTH FOR RUNTIME CONFIG (the FLAGS
+# array below). cloudbuild/dev.yaml is a frozen provisioning/history
+# reference (CD cutover 2026-08-28; this repo never had a Cloud Build
+# trigger — deploys were manual).
 
 name: Deploy
 
 on:
   workflow_dispatch:
-  # push:
-  #   branches: [main]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -38,7 +37,24 @@ env:
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
 
 jobs:
+  # Mirrors the CI typecheck: a broken main must not deploy.
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx tsc --noEmit
+
   deploy:
+    needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -54,11 +70,10 @@ jobs:
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
-      # An image-only deploy must never CREATE the service.
       - name: Verify target service is provisioned
         run: |
           gcloud run services describe "$SERVICE" --region "$REGION" --format='value(metadata.name)' >/dev/null \
-            || { echo "::error::Cloud Run service $SERVICE does not exist in $PROJECT_ID/$REGION. Provision it first with cloudbuild/dev.yaml."; exit 1; }
+            || { echo "::error::Cloud Run service $SERVICE does not exist in $PROJECT_ID/$REGION. Provision it deliberately first."; exit 1; }
 
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
@@ -71,8 +86,23 @@ jobs:
           docker push --all-tags "$IMAGE"
           echo "IMAGE_URI=$IMAGE:$SHORT_SHA" >> "$GITHUB_ENV"
 
+      # FLAGS = the ported cloudbuild/dev.yaml deploy args, verbatim.
+      # DELIBERATELY no --service-account and no --set-secrets: the service
+      # has always run as the project's default compute SA with no secrets;
+      # omitting the flag preserves the current identity on update. Changing
+      # that identity is a separate, deliberate task — not a CD side effect.
       - name: Deploy Cloud Run service
-        run: gcloud run deploy "$SERVICE" --image "$IMAGE_URI" --region "$REGION" --platform managed
+        run: |
+          FLAGS=(
+            --allow-unauthenticated
+            --min-instances=0
+            --max-instances=2
+            --memory=256Mi
+            --cpu=1
+            --port=8080
+            "--set-env-vars=NODE_ENV=development,GCP_PROJECT_ID=$PROJECT_ID,GUB_BACKEND_URL=https://gcp-universal-backend-dev-843516467880.us-central1.run.app"
+          )
+          gcloud run deploy "$SERVICE" --image "$IMAGE_URI" --region "$REGION" --platform managed "${FLAGS[@]}"
 
       - name: Report deployed revision
         run: |
