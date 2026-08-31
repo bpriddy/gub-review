@@ -4,9 +4,7 @@ import type { ReviewSession } from './types';
 export const dynamic = 'force-dynamic';
 
 const GUB_URL =
-  process.env['GUB_BACKEND_URL'] ??
-  process.env['NEXT_PUBLIC_GUB_URL'] ??
-  'http://localhost:3000';
+  process.env['GUB_BACKEND_URL'] ?? process.env['NEXT_PUBLIC_GUB_URL'] ?? 'http://localhost:3000';
 
 /**
  * Drive Review — magic-link landing page.
@@ -22,11 +20,7 @@ const GUB_URL =
  *
  * Client-side: the ReviewClient component owns form state + submission.
  */
-export default async function DriveReviewPage({
-  params,
-}: {
-  params: { token: string };
-}) {
+export default async function DriveReviewPage({ params }: { params: { token: string } }) {
   const { token } = params;
 
   // Server-side fetch — bypass the /api proxy since we already have the
@@ -68,7 +62,8 @@ export default async function DriveReviewPage({
 
   const session = (await res.json()) as ReviewSession;
 
-  const totalPending = session.fieldChanges.length + session.newEntityGroups.length;
+  const totalPending =
+    session.fieldChanges.length + session.newEntityGroups.length + session.insightOps.length;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -86,16 +81,22 @@ export default async function DriveReviewPage({
             <p className="text-sm text-gray-600 mt-3">
               {session.newEntityGroups.length > 0 && (
                 <>
-                  <span className="font-medium">{session.newEntityGroups.length}</span>{' '}
-                  new {session.newEntityGroups.length === 1 ? 'entity' : 'entities'}
+                  <span className="font-medium">{session.newEntityGroups.length}</span> new{' '}
+                  {session.newEntityGroups.length === 1 ? 'entity' : 'entities'}
                   {session.fieldChanges.length > 0 && ' · '}
                 </>
               )}
               {session.fieldChanges.length > 0 && (
                 <>
-                  <span className="font-medium">{session.fieldChanges.length}</span>{' '}
-                  proposed{' '}
+                  <span className="font-medium">{session.fieldChanges.length}</span> proposed{' '}
                   {session.fieldChanges.length === 1 ? 'change' : 'changes'}
+                </>
+              )}
+              {session.insightOps.length > 0 && (
+                <>
+                  {(session.newEntityGroups.length > 0 || session.fieldChanges.length > 0) && ' · '}
+                  <span className="font-medium">{session.insightOps.length}</span> insight{' '}
+                  {session.insightOps.length === 1 ? 'update' : 'updates'}
                 </>
               )}
             </p>
